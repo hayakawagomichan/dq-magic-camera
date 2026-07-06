@@ -1,0 +1,1313 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>DQ魔法エフェクトカメラ - マダンテ</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { height: 100%; background: #000; overflow: hidden; font-family: Meiryo, 'Hiragino Kaku Gothic ProN', sans-serif; }
+  #stage { position: relative; width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; }
+  #view { max-width: 100%; max-height: 100%; }
+  video { display: none; }
+
+  #panel {
+    position: absolute; top: 10px; left: 10px; z-index: 10;
+    background: rgba(0,0,20,0.72); border: 1px solid rgba(255,255,255,0.35);
+    border-radius: 10px; padding: 10px 12px; color: #fff; font-size: 13px;
+    display: flex; flex-direction: column; gap: 8px; min-width: 230px;
+  }
+  #panel.collapsed .row { display: none; }
+  #panel .row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+  #panel label { opacity: 0.85; }
+  #panel input[type=text], #panel input[type=number], #panel select {
+    background: #111; color: #fff; border: 1px solid #666; border-radius: 4px;
+    padding: 3px 6px; font-size: 13px; width: 110px;
+  }
+  #panel input[type=number] { width: 70px; }
+  button {
+    background: #2b2b5e; color: #fff; border: 1px solid #8888cc; border-radius: 6px;
+    padding: 6px 10px; font-size: 13px; cursor: pointer; font-family: inherit;
+    touch-action: manipulation;
+  }
+  #saveBtn { background: #1e6b2e; border-color: #7dd88a; }
+  button:hover { background: #3d3d80; }
+  button:disabled { opacity: 0.4; cursor: default; }
+  #recBtn.recording { background: #a00; border-color: #f66; animation: blink 1s infinite; }
+  @keyframes blink { 50% { opacity: 0.6; } }
+  #status { font-size: 11px; opacity: 0.8; line-height: 1.5; }
+  #togglePanel {
+    position: absolute; top: 10px; right: 10px; z-index: 11;
+    background: rgba(0,0,20,0.6); border-radius: 6px;
+  }
+  /* 会議モード: OBSのウィンドウキャプチャにUIが映らないよう、ほぼ透明にする（ホバーで復帰） */
+  body.meeting #panel, body.meeting #togglePanel { opacity: 0.05; transition: opacity 0.25s; }
+  body.meeting #panel:hover, body.meeting #togglePanel:hover { opacity: 1; }
+  /* スマホ: ボタンを指で押しやすく、パネルをコンパクトに */
+  @media (max-width: 700px) {
+    #panel { min-width: 170px; padding: 8px 10px; gap: 6px; font-size: 12px; max-width: 62vw; }
+    #panel input[type=text] { width: 90px; }
+    #panel input[type=number] { width: 60px; }
+    button { padding: 10px 12px; font-size: 14px; }
+    #startOverlay h1 { font-size: 19px; }
+    #startOverlay p { font-size: 12px; padding: 0 14px; }
+  }
+  #startOverlay {
+    position: absolute; inset: 0; z-index: 20; display: flex; flex-direction: column;
+    align-items: center; justify-content: center; gap: 18px;
+    background: radial-gradient(ellipse at center, #1a1a3e 0%, #05050f 100%); color: #fff;
+  }
+  #startOverlay h1 { font-size: 26px; letter-spacing: 2px; text-shadow: 0 0 18px #7b5cff; }
+  #startOverlay p { font-size: 13px; opacity: 0.75; text-align: center; line-height: 1.9; }
+  #startBtn { font-size: 18px; padding: 14px 34px; background: #4a2d8f; border-color: #b39dff; border-radius: 10px; }
+  #startBtn:hover { background: #5d3cb0; }
+</style>
+</head>
+<body>
+<div id="stage">
+  <video id="video" playsinline muted></video>
+  <canvas id="view"></canvas>
+
+  <div id="startOverlay">
+    <h1>― DQ魔法エフェクトカメラ ―</h1>
+    <p>
+      片手を頭上に上げると <span style="color:#ffd257">金色のルーン詠唱</span> が始まり、<br>
+      チャージ完了後に手を振り下ろすと <span style="color:#ff7bff">選んだ呪文</span> が発動します。<br><br>
+      カメラの使用を許可してください（初回はモデル読込に少し時間がかかります）
+    </p>
+    <button id="startBtn">▶ カメラを起動する</button>
+    <p id="loadMsg" style="color:#ffd257"></p>
+  </div>
+
+  <div id="panel">
+    <div class="row">
+      <button id="recBtn" disabled>⏺ 録画開始</button>
+      <button id="castBtn" disabled>✨ 手動発動</button>
+    </div>
+    <div class="row">
+      <button id="flipBtn" disabled>🔄 カメラ切替</button>
+      <button id="saveBtn" style="display:none">💾 動画を保存</button>
+    </div>
+    <div class="row">
+      <label>じゅもん</label>
+      <select id="spellSel">
+        <option value="madante">1: マダンテ</option>
+        <option value="merazoma">2: メラゾーマ</option>
+        <option value="hoimi">3: ホイミ</option>
+        <option value="rarihoma">4: ラリホーマ</option>
+      </select>
+    </div>
+    <div class="row">
+      <label>となえる人</label><input type="text" id="nameInput" value="ベロニカ">
+    </div>
+    <div class="row">
+      <label>ダメージ/回復</label><input type="number" id="dmgInput" value="9999" min="1" max="99999">
+      <label><input type="checkbox" id="sfxChk" checked> 効果音</label>
+    </div>
+    <div class="row">
+      <label><input type="checkbox" id="meetingChk"> 会議モード（マダンテで会議終了）</label>
+    </div>
+    <div id="status">起動待ち...</div>
+  </div>
+  <button id="togglePanel">☰</button>
+</div>
+
+<script type="module">
+// ============================================================
+// DQ11風 魔法エフェクトカメラ（マダンテ）
+// 詠唱: 両手を合わせる → 金色ルーン帯 / 発動: 両手を広げる
+// ============================================================
+
+const video = document.getElementById('video');
+const canvas = document.getElementById('view');
+const ctx = canvas.getContext('2d');
+const statusEl = document.getElementById('status');
+const nameInput = document.getElementById('nameInput');
+const dmgInput = document.getElementById('dmgInput');
+const sfxChk = document.getElementById('sfxChk');
+const recBtn = document.getElementById('recBtn');
+const castBtn = document.getElementById('castBtn');
+const loadMsg = document.getElementById('loadMsg');
+const spellSel = document.getElementById('spellSel');
+
+spellSel.value = localStorage.getItem('dqSpell') || 'madante';
+if (!spellSel.value) spellSel.value = 'madante';
+spellSel.onchange = () => { localStorage.setItem('dqSpell', spellSel.value); spellSel.blur(); };
+
+// ---------- 会議モード（ローカルヘルパー連携） ----------
+const meetingChk = document.getElementById('meetingChk');
+const HELPER_URL = 'http://localhost:8124';
+
+meetingChk.onchange = async () => {
+  document.body.classList.toggle('meeting', meetingChk.checked);
+  meetingChk.blur();
+  if (!meetingChk.checked) return;
+  try {
+    const r = await fetch(HELPER_URL + '/health');
+    const j = await r.json();
+    showMessage(['かいぎ終了ヘルパー: せつぞくOK', `ターゲット: ${j.window}`], 4);
+  } catch (e) {
+    meetingChk.checked = false;
+    document.body.classList.remove('meeting');
+    showMessage(['ヘルパーに つながりません', 'start-helper.bat を じっこうしてください'], 5);
+  }
+};
+
+// 発動（爆発ピーク）の瞬間にヘルパーへ通知。どの呪文で会議を終了するかはヘルパー側の設定
+function notifyHelper() {
+  if (!meetingChk.checked) return;
+  fetch(`${HELPER_URL}/cast?spell=${activeSpellKey}`).catch(() => {});
+}
+
+nameInput.value = localStorage.getItem('dqName') || 'ベロニカ';
+nameInput.addEventListener('change', () => localStorage.setItem('dqName', nameInput.value));
+document.getElementById('togglePanel').onclick = () =>
+  document.getElementById('panel').classList.toggle('collapsed');
+
+let W = 1280, H = 720;
+let handLandmarker = null;
+let handsAvailable = false;
+
+// ---------- 定数 ----------
+const CHARGE_TIME = 1.8;        // 詠唱チャージ秒数
+const HANDS_UP_Y = 0.38;        // 手のひらがこれより上（画面上部38%）で「上げた」判定
+const RELEASE_Y = 0.60;         // 手のひらがこれより下で「振り下ろした」判定
+const READY_TIMEOUT = 3.0;      // チャージ完了後、自動発動までの秒数
+// ルーン風グリフ24種を起動時に生成（フォント非依存 = スマホでも豆腐にならない）
+// 各グリフは単位座標(-0.5〜0.5)の線分リスト
+const RUNE_GLYPHS = (() => {
+  let seed = 12345;
+  const rnd = () => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return (seed % 1000) / 1000; };
+  const glyphs = [];
+  for (let g = 0; g < 24; g++) {
+    const strokes = [[0, -0.5, 0, 0.5]];  // 縦の主線
+    const n = 2 + (rnd() * 2 | 0);
+    for (let s = 0; s < n; s++) {
+      const y1 = -0.5 + rnd();
+      const dir = rnd() < 0.5 ? -1 : 1;
+      strokes.push([0, y1, dir * (0.25 + rnd() * 0.3), y1 + (rnd() - 0.5) * 0.7]);
+    }
+    glyphs.push(strokes);
+  }
+  return glyphs;
+})();
+
+// ---------- 状態 ----------
+let state = 'idle';             // idle | charging | ready | madante
+let stateT = 0;                 // 現在の状態の経過秒
+let charge = 0;                 // 0..1
+let effectCenter = { x: 0, y: 0 };
+let handsLostT = 0;
+let lastPalms = [];             // 検出した手のひら中心（px座標）
+let particles = [];
+let damageNumbers = [];
+let pillars = [];
+let mist = [];
+let activeSpell = null;         // 発動中の呪文（release状態のあいだ有効）
+let activeSpellKey = 'madante';
+let damageSpawned = false;
+let msgLines = [];
+let msgTimer = 0;
+
+function showMessage(lines, sec = 2.5) { msgLines = lines; msgTimer = sec; }
+const lerp = (a, b, t) => a + (b - a) * t;
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+const easeOut = t => 1 - Math.pow(1 - t, 3);
+
+// ---------- 効果音（WebAudio合成） ----------
+let audioCtx = null, masterGain = null, audioDest = null;
+let chargeNodes = null;
+
+function initAudio() {
+  audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  masterGain = audioCtx.createGain();
+  masterGain.gain.value = 0.7;
+  masterGain.connect(audioCtx.destination);
+  audioDest = audioCtx.createMediaStreamDestination();
+  masterGain.connect(audioDest);
+}
+function sfxOn() { return sfxChk.checked && audioCtx; }
+
+function startChargeSound() {
+  if (!sfxOn() || chargeNodes) return;
+  const t = audioCtx.currentTime;
+  const osc = audioCtx.createOscillator();
+  osc.type = 'sawtooth';
+  osc.frequency.setValueAtTime(180, t);
+  osc.frequency.exponentialRampToValueAtTime(950, t + CHARGE_TIME);
+  const lfo = audioCtx.createOscillator();
+  lfo.frequency.value = 9;
+  const lfoGain = audioCtx.createGain();
+  lfoGain.gain.value = 22;
+  lfo.connect(lfoGain); lfoGain.connect(osc.detune);
+  const filter = audioCtx.createBiquadFilter();
+  filter.type = 'lowpass'; filter.frequency.value = 2200;
+  const g = audioCtx.createGain();
+  g.gain.setValueAtTime(0.0001, t);
+  g.gain.exponentialRampToValueAtTime(0.25, t + 0.4);
+  osc.connect(filter); filter.connect(g); g.connect(masterGain);
+  osc.start(); lfo.start();
+  chargeNodes = { osc, lfo, g };
+}
+function stopChargeSound(fade = 0.15) {
+  if (!chargeNodes) return;
+  const t = audioCtx.currentTime;
+  chargeNodes.g.gain.cancelScheduledValues(t);
+  chargeNodes.g.gain.setValueAtTime(chargeNodes.g.gain.value, t);
+  chargeNodes.g.gain.exponentialRampToValueAtTime(0.0001, t + fade);
+  const n = chargeNodes;
+  setTimeout(() => { try { n.osc.stop(); n.lfo.stop(); } catch (e) {} }, fade * 1000 + 60);
+  chargeNodes = null;
+}
+function playExplosion(scale = 1) {
+  if (!sfxOn()) return;
+  const t = audioCtx.currentTime;
+  // ノイズバースト
+  const len = audioCtx.sampleRate * 2;
+  const buf = audioCtx.createBuffer(1, len, audioCtx.sampleRate);
+  const d = buf.getChannelData(0);
+  for (let i = 0; i < len; i++) d[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / len, 2);
+  const src = audioCtx.createBufferSource();
+  src.buffer = buf;
+  const filter = audioCtx.createBiquadFilter();
+  filter.type = 'lowpass';
+  filter.frequency.setValueAtTime(5000, t);
+  filter.frequency.exponentialRampToValueAtTime(180, t + 1.8);
+  const g = audioCtx.createGain();
+  g.gain.setValueAtTime(0.9 * scale, t);
+  g.gain.exponentialRampToValueAtTime(0.0001, t + 2.0 * scale);
+  src.connect(filter); filter.connect(g); g.connect(masterGain);
+  src.start();
+  // 低音ブーム
+  const boom = audioCtx.createOscillator();
+  boom.type = 'sine';
+  boom.frequency.setValueAtTime(120, t);
+  boom.frequency.exponentialRampToValueAtTime(38, t + 1.2);
+  const bg = audioCtx.createGain();
+  bg.gain.setValueAtTime(0.8 * scale, t);
+  bg.gain.exponentialRampToValueAtTime(0.0001, t + 1.4);
+  boom.connect(bg); bg.connect(masterGain);
+  boom.start(); boom.stop(t + 1.5);
+}
+function playHealSound() {
+  if (!sfxOn()) return;
+  const t0 = audioCtx.currentTime;
+  // やわらかい上昇アルペジオ
+  [523.25, 659.25, 783.99, 1046.5].forEach((f, i) => {
+    const o = audioCtx.createOscillator();
+    o.type = 'sine';
+    o.frequency.value = f;
+    const g = audioCtx.createGain();
+    const ts = t0 + 0.14 * i;
+    g.gain.setValueAtTime(0.0001, ts);
+    g.gain.exponentialRampToValueAtTime(0.18, ts + 0.04);
+    g.gain.exponentialRampToValueAtTime(0.0001, ts + 0.9);
+    o.connect(g); g.connect(masterGain);
+    o.start(ts); o.stop(ts + 1.0);
+  });
+}
+function playSleepSound() {
+  if (!sfxOn()) return;
+  const t0 = audioCtx.currentTime;
+  // ゆっくり下降する眠たげな2音
+  [[520, 260, 0], [390, 195, 0.5]].forEach(([f1, f2, dl]) => {
+    const o = audioCtx.createOscillator();
+    o.type = 'triangle';
+    o.frequency.setValueAtTime(f1, t0 + dl);
+    o.frequency.exponentialRampToValueAtTime(f2, t0 + dl + 1.4);
+    const g = audioCtx.createGain();
+    g.gain.setValueAtTime(0.0001, t0 + dl);
+    g.gain.exponentialRampToValueAtTime(0.14, t0 + dl + 0.1);
+    g.gain.exponentialRampToValueAtTime(0.0001, t0 + dl + 1.6);
+    o.connect(g); g.connect(masterGain);
+    o.start(t0 + dl); o.stop(t0 + dl + 1.7);
+  });
+}
+function playDamageHit() {
+  if (!sfxOn()) return;
+  const t = audioCtx.currentTime;
+  const osc = audioCtx.createOscillator();
+  osc.type = 'square';
+  osc.frequency.setValueAtTime(880, t);
+  osc.frequency.exponentialRampToValueAtTime(220, t + 0.18);
+  const g = audioCtx.createGain();
+  g.gain.setValueAtTime(0.3, t);
+  g.gain.exponentialRampToValueAtTime(0.0001, t + 0.22);
+  osc.connect(g); g.connect(masterGain);
+  osc.start(); osc.stop(t + 0.25);
+}
+
+// ---------- カメラ + 手認識 ----------
+let facing = 'user';    // 'user'=前面 / 'environment'=背面
+let mirror = true;      // 前面カメラのときだけ左右反転表示
+
+async function startCamera() {
+  if (video.srcObject) for (const t of video.srcObject.getTracks()) t.stop();
+  const stream = await navigator.mediaDevices.getUserMedia({
+    video: { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: facing },
+    audio: false
+  });
+  video.srcObject = stream;
+  await video.play();
+  await new Promise(res => {
+    if (video.readyState >= 2 && video.videoWidth) return res();
+    video.addEventListener('loadeddata', res, { once: true });
+  });
+  W = canvas.width = video.videoWidth;
+  H = canvas.height = video.videoHeight;
+  mirror = facing === 'user';
+}
+
+const flipBtn = document.getElementById('flipBtn');
+flipBtn.onclick = async () => {
+  flipBtn.blur();
+  const prev = facing;
+  facing = facing === 'user' ? 'environment' : 'user';
+  try {
+    await startCamera();
+  } catch (e) {
+    facing = prev;  // 切替失敗（背面カメラなし等）は元に戻す
+    try { await startCamera(); } catch (e2) {}
+    showMessage(['カメラを きりかえられません'], 2.5);
+  }
+};
+
+// 画面スリープ防止（スマホ撮影中に画面が消えないように）
+let wakeLock = null;
+async function keepAwake() {
+  try { wakeLock = await navigator.wakeLock.request('screen'); } catch (e) {}
+}
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') keepAwake();
+});
+
+async function loadHandModel() {
+  try {
+    const visionMod = await import('https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14');
+    const fileset = await visionMod.FilesetResolver.forVisionTasks(
+      'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm');
+    const make = delegate => visionMod.HandLandmarker.createFromOptions(fileset, {
+      baseOptions: {
+        modelAssetPath: 'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task',
+        delegate
+      },
+      runningMode: 'VIDEO',
+      numHands: 2
+    });
+    try {
+      handLandmarker = await make('GPU');
+    } catch (e) {
+      console.warn('GPU delegate failed, falling back to CPU', e);
+      handLandmarker = await make('CPU');
+    }
+    handsAvailable = true;
+  } catch (e) {
+    console.error('hand model load failed', e);
+    handsAvailable = false;
+  }
+}
+
+// 手のひら中心（正規化座標）: 手首+指の付け根の平均
+function palmCenter(lm) {
+  const idx = [0, 5, 9, 13, 17];
+  let x = 0, y = 0;
+  for (const i of idx) { x += lm[i].x; y += lm[i].y; }
+  return { x: x / idx.length, y: y / idx.length };
+}
+
+// ---------- 状態遷移 ----------
+function beginCharge(center) {
+  state = 'charging'; stateT = 0; charge = 0;
+  effectCenter = center;
+  startChargeSound();
+  showMessage([`${nameInput.value}は まりょくを ためている！`], CHARGE_TIME + 1);
+}
+function beginReady() {
+  state = 'ready'; stateT = 0;
+  showMessage(['まりょくが みなぎった！', '手を ふりおろせ！'], READY_TIMEOUT);
+}
+const dmgValue = () => clamp(parseInt(dmgInput.value) || 9999, 1, 99999);
+
+// ---------- 呪文定義 ----------
+// 詠唱（金色ルーン）は全呪文共通。dur=発動演出の長さ、resultAt=ダメージ/結果表示のタイミング(0-1)
+const SPELLS = {
+  madante: {
+    label: 'マダンテ', dur: 3.8, resultAt: 0.42,
+    start() {
+      playExplosion(1.0);
+      spawnExplosionParticles(['#ff7bff', '#c76bff', '#ffffff', '#ff3df0', '#9a4dff', '#ffb0ff'], 240, 800);
+      spawnPillars();
+      showMessage([`${nameInput.value}は すべての`, 'まりょくを ときはなった！'], 2.2);
+    },
+    result() {
+      spawnDamage(2);
+      showMessage(['モンスターたちに', `${dmgValue()}の ダメージ！！`], 2.5);
+    },
+    shake(t) { return 26 * Math.max(0, 1 - t * 1.6); },
+    draw(t, time) { drawMadante(t, time); }
+  },
+  merazoma: {
+    label: 'メラゾーマ', dur: 3.2, resultAt: 0.52,
+    burst: false,
+    start() {
+      this.burst = false;
+      showMessage([`${nameInput.value}は メラゾーマを となえた！`], 2.0);
+    },
+    tick(dt, t) {
+      if (t < 0.38) {
+        // 火球が成長中: 炎の粒が立ちのぼる
+        for (let i = 0; i < 3; i++) spawnFireParticle(effectCenter.x, effectCenter.y, 30 + 80 * (t / 0.38));
+      } else if (!this.burst) {
+        this.burst = true;
+        playExplosion(0.7);
+        spawnExplosionParticles(['#ffdd55', '#ff9933', '#ff5522', '#ffffff', '#ffbb44'], 180, 700);
+      }
+    },
+    result() {
+      spawnDamage(1);
+      showMessage(['モンスターに', `${dmgValue()}の ダメージ！！`], 2.5);
+    },
+    shake(t) { return t > 0.38 ? 18 * Math.max(0, 1 - (t - 0.38) * 2.2) : 0; },
+    draw(t, time) { drawMerazoma(t, time); }
+  },
+  hoimi: {
+    label: 'ホイミ', dur: 3.0, resultAt: 0.55,
+    start() {
+      playHealSound();
+      showMessage([`${nameInput.value}は ホイミを となえた！`], 2.0);
+    },
+    tick(dt, t) { if (t < 0.8) for (let i = 0; i < 2; i++) spawnHealParticle(); },
+    result() {
+      spawnHealNumber();
+      showMessage([`HPが ${dmgValue()} かいふくした！`], 2.4);
+    },
+    shake() { return 0; },
+    draw(t, time) { drawHoimi(t, time); }
+  },
+  rarihoma: {
+    label: 'ラリホーマ', dur: 3.4, resultAt: 0.6,
+    start() {
+      playSleepSound();
+      spawnMist();
+      showMessage([`${nameInput.value}は ラリホーマを となえた！`], 2.0);
+    },
+    tick(dt, t) { if (t < 0.75 && Math.random() < 0.3) spawnSleepZ(); },
+    result() { showMessage(['モンスターたちは', 'ねむってしまった！'], 2.4); },
+    shake() { return 0; },
+    draw(t, time) { drawRarihoma(t, time); }
+  }
+};
+
+function beginRelease() {
+  activeSpellKey = SPELLS[spellSel.value] ? spellSel.value : 'madante';
+  activeSpell = SPELLS[activeSpellKey];
+  state = 'release'; stateT = 0; damageSpawned = false;
+  stopChargeSound(0.05);
+  activeSpell.start();
+}
+function fizzle() {
+  state = 'idle'; stateT = 0; charge = 0;
+  stopChargeSound();
+  msgTimer = 0;
+}
+
+// 手動発動（キー/ボタン）: 詠唱→自動爆発のフルシーケンス
+let manualMode = false;
+function manualCast() {
+  if (state !== 'idle') return;
+  manualMode = true;
+  beginCharge({ x: W / 2, y: H * 0.55 });
+}
+
+// クリック後はフォーカスを外す（Spaceキーがボタンを再クリックするのを防ぐ）
+castBtn.onclick = () => { manualCast(); castBtn.blur(); };
+window.addEventListener('keydown', e => {
+  if (e.target.tagName === 'INPUT') return;
+  if (e.code === 'Space') { e.preventDefault(); manualCast(); }
+  if (e.key === 'd' || e.key === 'D') spawnDamage();
+  if (e.key === 'r' || e.key === 'R') recBtn.click();
+  if (e.key >= '1' && e.key <= '4') {
+    const order = ['madante', 'merazoma', 'hoimi', 'rarihoma'];
+    spellSel.value = order[+e.key - 1];
+    localStorage.setItem('dqSpell', spellSel.value);
+  }
+});
+
+// ---------- パーティクル ----------
+function spawnExplosionParticles(colors, count, maxSpeed) {
+  for (let i = 0; i < count; i++) {
+    const a = Math.random() * Math.PI * 2;
+    const sp = 150 + Math.random() * maxSpeed;
+    particles.push({
+      x: effectCenter.x, y: effectCenter.y,
+      vx: Math.cos(a) * sp, vy: Math.sin(a) * sp - 100,
+      life: 0, maxLife: 0.8 + Math.random() * 1.6,
+      size: 2 + Math.random() * 7,
+      color: colors[(Math.random() * colors.length) | 0]
+    });
+  }
+}
+function spawnChargeParticle(cx, cy) {
+  const a = Math.random() * Math.PI * 2;
+  const r = 60 + Math.random() * 120;
+  particles.push({
+    x: cx + Math.cos(a) * r, y: cy + Math.sin(a) * r,
+    vx: -Math.cos(a) * (r * 1.5), vy: -Math.sin(a) * (r * 1.5),
+    life: 0, maxLife: 0.5 + Math.random() * 0.3,
+    size: 1.5 + Math.random() * 3.5,
+    color: Math.random() < 0.3 ? '#fff6c9' : '#ffd257'
+  });
+}
+function spawnPalmSparkle(cx, cy) {
+  particles.push({
+    x: cx + (Math.random() - 0.5) * 50, y: cy + (Math.random() - 0.5) * 50,
+    vx: (Math.random() - 0.5) * 30, vy: -20 - Math.random() * 40,
+    life: 0, maxLife: 0.6 + Math.random() * 0.4,
+    size: 1 + Math.random() * 2.5,
+    color: '#ffd257'
+  });
+}
+function spawnPillars() {
+  pillars = [];
+  const n = 7;
+  for (let i = 0; i < n; i++) {
+    pillars.push({
+      x: W * (0.08 + 0.84 * Math.random()),
+      w: 40 + Math.random() * 110,
+      t0: 0.1 + Math.random() * 0.7,
+      dur: 0.5 + Math.random() * 0.7
+    });
+  }
+}
+function spawnDamage(count = 2) {
+  const dmg = String(dmgValue());
+  playDamageHit();
+  for (let i = 0; i < count; i++) {
+    const x = count === 1
+      ? W * (0.42 + Math.random() * 0.16)
+      : W * (0.28 + i * 0.3 + Math.random() * 0.1);
+    const y = H * (0.25 + Math.random() * 0.12);
+    damageNumbers.push({ x, y, text: dmg, life: 0, maxLife: 2.0, rot: (Math.random() - 0.5) * 0.25 });
+  }
+}
+function spawnHealNumber() {
+  damageNumbers.push({
+    x: effectCenter.x, y: H * 0.32, text: String(dmgValue()),
+    life: 0, maxLife: 2.0, rot: 0, heal: true
+  });
+}
+function spawnFireParticle(cx, cy, r) {
+  const a = Math.random() * Math.PI * 2;
+  particles.push({
+    x: cx + Math.cos(a) * r, y: cy + Math.sin(a) * r,
+    vx: (Math.random() - 0.5) * 40, vy: -60 - Math.random() * 90,
+    life: 0, maxLife: 0.4 + Math.random() * 0.4,
+    size: 2 + Math.random() * 4,
+    color: ['#ffdd55', '#ff9933', '#ff5522'][(Math.random() * 3) | 0]
+  });
+}
+function spawnHealParticle() {
+  const colors = ['#b8ff9e', '#eaffd0', '#7dff8a', '#fff8b0'];
+  particles.push({
+    x: effectCenter.x + (Math.random() - 0.5) * 320,
+    y: H * 0.05 + Math.random() * H * 0.55,
+    vx: (Math.random() - 0.5) * 20, vy: 40 + Math.random() * 55,
+    life: 0, maxLife: 1.0 + Math.random() * 0.8,
+    size: 1.5 + Math.random() * 3.2,
+    color: colors[(Math.random() * colors.length) | 0]
+  });
+}
+function spawnSleepZ() {
+  particles.push({
+    x: effectCenter.x + (Math.random() - 0.5) * 240,
+    y: effectCenter.y - 20 - Math.random() * 100,
+    vx: 0, vy: -35 - Math.random() * 25,
+    life: 0, maxLife: 1.8 + Math.random(),
+    size: 2.4 + Math.random() * 2.2,  // テキスト粒子はフォントサイズ = size*10
+    color: '#e6a8ff', text: 'Ｚ', wob: Math.random() * 6.3
+  });
+}
+function spawnMist() {
+  mist = [];
+  for (let i = 0; i < 10; i++) {
+    mist.push({
+      x: Math.random() * W, y: H * (0.25 + Math.random() * 0.55),
+      r: 90 + Math.random() * 170,
+      drift: (Math.random() - 0.5) * 50,
+      phase: Math.random() * Math.PI * 2,
+      hue: Math.random() < 0.5 ? '236,120,255' : '180,100,255'
+    });
+  }
+}
+
+// ---------- 毎フレーム更新 ----------
+let lastTime = performance.now();
+
+function update(dt, now) {
+  // --- 手の検出 ---
+  lastPalms = [];
+  if (handsAvailable && handLandmarker && video.readyState >= 2) {
+    let result = null;
+    try { result = handLandmarker.detectForVideo(video, now); } catch (e) {}
+    if (result && result.landmarks) {
+      for (const lm of result.landmarks) {
+        const c = palmCenter(lm);
+        // ミラー表示のときはx反転して表示座標に合わせる
+        const nx = mirror ? 1 - c.x : c.x;
+        lastPalms.push({ x: nx * W, y: c.y * H, nx, ny: c.y });
+      }
+    }
+  }
+
+  // 検出された手すべての平均位置と、上げた/振り下ろした判定
+  const anyHands = lastPalms.length > 0;
+  let handMid = null;
+  if (anyHands) {
+    let sx = 0, sy = 0;
+    for (const p of lastPalms) { sx += p.x; sy += p.y; }
+    handMid = { x: sx / lastPalms.length, y: sy / lastPalms.length };
+  }
+  // 片手でも上がっていれば詠唱開始。エフェクト中心は「上がっている手」を優先
+  const upList = lastPalms.filter(p => p.ny < HANDS_UP_Y);
+  let upMid = null;
+  if (upList.length) {
+    let ux = 0, uy = 0;
+    for (const p of upList) { ux += p.x; uy += p.y; }
+    upMid = { x: ux / upList.length, y: uy / upList.length };
+  }
+  const palmsUp = upList.length > 0;
+  const palmsDown = anyHands && lastPalms.every(p => p.ny > RELEASE_Y);
+  if (!anyHands) handsLostT += dt; else handsLostT = 0;
+
+  stateT += dt;
+  msgTimer = Math.max(0, msgTimer - dt);
+
+  // --- 状態機械 ---
+  switch (state) {
+    case 'idle':
+      // 待機中: 手のひらに小さな光（トラッキング確認用）
+      for (const p of lastPalms) if (Math.random() < 0.3) spawnPalmSparkle(p.x, p.y);
+      if (palmsUp) {
+        manualMode = false;
+        beginCharge(upMid);
+      }
+      break;
+
+    case 'charging':
+      charge = clamp(charge + dt / CHARGE_TIME, 0, 1);
+      if (!manualMode && (upMid || handMid)) effectCenter = upMid || handMid;
+      for (let i = 0; i < 3; i++) spawnChargeParticle(effectCenter.x, effectCenter.y);
+      if (!manualMode) {
+        // 振り下ろし: チャージが乗っていれば発動、早すぎたら不発
+        if (palmsDown && charge > 0.35) { beginRelease(); break; }
+        if (palmsDown && charge <= 0.35) { fizzle(); break; }
+        // 手が上がりすぎてフレームアウトしがちなので、ロストは長めに待つ
+        if (handsLostT > 1.2) { fizzle(); break; }
+      }
+      if (charge >= 1) {
+        if (manualMode) { if (stateT > CHARGE_TIME + 0.5) beginRelease(); }
+        else beginReady();
+      }
+      break;
+
+    case 'ready':
+      if (upMid || handMid) effectCenter = upMid || handMid;
+      for (let i = 0; i < 4; i++) spawnChargeParticle(effectCenter.x, effectCenter.y);
+      if (palmsDown || stateT > READY_TIMEOUT) { beginRelease(); break; }
+      if (handsLostT > 2.0) { fizzle(); }
+      break;
+
+    case 'release': {
+      const sp = activeSpell;
+      const t = stateT / sp.dur;
+      if (sp.tick) sp.tick(dt, t);
+      if (!damageSpawned && t > sp.resultAt) {
+        damageSpawned = true;
+        sp.result();
+        notifyHelper();
+      }
+      if (stateT > sp.dur) { state = 'idle'; stateT = 0; charge = 0; }
+      break;
+    }
+  }
+
+  // --- パーティクル更新 ---
+  for (const p of particles) {
+    p.life += dt;
+    p.x += p.vx * dt; p.y += p.vy * dt;
+    p.vx *= 0.985; p.vy *= 0.985;
+  }
+  particles = particles.filter(p => p.life < p.maxLife);
+  if (particles.length > 800) particles.splice(0, particles.length - 800);
+
+  for (const d of damageNumbers) d.life += dt;
+  damageNumbers = damageNumbers.filter(d => d.life < d.maxLife);
+}
+
+// ---------- 描画 ----------
+function draw(now) {
+  const time = now / 1000;
+  ctx.clearRect(0, 0, W, H);
+
+  // 画面シェイク（爆発時）
+  let shakeX = 0, shakeY = 0;
+  if (state === 'release') {
+    const amp = activeSpell.shake(stateT / activeSpell.dur);
+    shakeX = (Math.random() - 0.5) * amp;
+    shakeY = (Math.random() - 0.5) * amp;
+  }
+
+  ctx.save();
+  ctx.translate(shakeX, shakeY);
+
+  // カメラ映像（前面カメラのときのみミラー）
+  ctx.save();
+  if (mirror) {
+    ctx.scale(-1, 1);
+    ctx.drawImage(video, -W, 0, W, H);
+  } else {
+    ctx.drawImage(video, 0, 0, W, H);
+  }
+  ctx.restore();
+
+  // --- 詠唱エフェクト：金色ルーン帯 ---
+  if (state === 'charging' || state === 'ready') {
+    const inten = state === 'ready' ? 1 + Math.sin(time * 10) * 0.07 : easeOut(charge);
+    drawRuneRibbons(effectCenter.x, effectCenter.y, inten, time);
+    drawCoreGlow(effectCenter.x, effectCenter.y, inten, '#ffd257');
+  }
+
+  // --- 呪文発動エフェクト ---
+  if (state === 'release') activeSpell.draw(stateT / activeSpell.dur, time);
+
+  // --- パーティクル（加算合成） ---
+  ctx.save();
+  ctx.globalCompositeOperation = 'lighter';
+  for (const p of particles) {
+    const a = 1 - p.life / p.maxLife;
+    ctx.globalAlpha = a;
+    ctx.fillStyle = p.color;
+    ctx.shadowColor = p.color;
+    ctx.shadowBlur = 12;
+    if (p.text) {
+      // テキスト粒子（ラリホーマのＺなど）: ゆらゆら揺れながら昇る
+      ctx.font = `bold ${Math.round(p.size * 10)}px Meiryo, sans-serif`;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(p.text, p.x + Math.sin(p.life * 3 + (p.wob || 0)) * 14, p.y);
+    } else {
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+  ctx.restore();
+  ctx.globalAlpha = 1;
+
+  ctx.restore(); // シェイク解除
+
+  // --- ダメージ数字 ---
+  for (const d of damageNumbers) drawDamageNumber(d);
+
+  // --- メッセージウィンドウ ---
+  if (msgTimer > 0 && msgLines.length) drawMessageWindow(msgLines);
+}
+
+// 金色ルーン帯（X字に交差する光の帯）
+function drawRuneRibbons(cx, cy, inten, time) {
+  const len = lerp(140, Math.min(W, H) * 0.52, inten);
+  const bandH = lerp(20, 40, inten);
+  const angles = [-0.48 + Math.sin(time * 1.2) * 0.05, 0.52 + Math.cos(time * 1.4) * 0.05];
+
+  for (let i = 0; i < angles.length; i++) {
+    ctx.save();
+    ctx.translate(cx, cy);
+    ctx.rotate(angles[i]);
+    ctx.globalAlpha = 0.55 + 0.45 * inten;
+
+    // 帯本体
+    const grad = ctx.createLinearGradient(-len, 0, len, 0);
+    grad.addColorStop(0, 'rgba(255,180,40,0)');
+    grad.addColorStop(0.25, 'rgba(255,200,70,0.85)');
+    grad.addColorStop(0.5, 'rgba(255,246,200,0.95)');
+    grad.addColorStop(0.75, 'rgba(255,200,70,0.85)');
+    grad.addColorStop(1, 'rgba(255,180,40,0)');
+    ctx.shadowColor = 'rgba(255,205,70,0.95)';
+    ctx.shadowBlur = 28 * inten;
+    ctx.fillStyle = grad;
+    ctx.beginPath();
+    if (ctx.roundRect) ctx.roundRect(-len, -bandH / 2, len * 2, bandH, bandH / 2);
+    else ctx.rect(-len, -bandH / 2, len * 2, bandH);
+    ctx.fill();
+
+    // 帯の中を流れるルーン記号（手描き線分グリフ）
+    ctx.clip();
+    ctx.shadowBlur = 0;
+    ctx.strokeStyle = 'rgba(140,70,10,0.9)';
+    ctx.lineWidth = Math.max(1.5, bandH * 0.07);
+    ctx.lineCap = 'round';
+    const spacing = bandH * 0.9;
+    const scroll = (time * 90 * (i === 0 ? 1 : -1)) % spacing;
+    for (let x = -len - spacing; x < len + spacing; x += spacing) {
+      const gi = Math.abs(Math.round((x + 10000) / spacing)) % RUNE_GLYPHS.length;
+      drawRuneGlyph(x + scroll, 0, bandH * 0.55, gi);
+    }
+    ctx.restore();
+  }
+  ctx.globalAlpha = 1;
+}
+
+function drawRuneGlyph(x, y, size, gi) {
+  const strokes = RUNE_GLYPHS[gi % RUNE_GLYPHS.length];
+  ctx.beginPath();
+  for (const [x1, y1, x2, y2] of strokes) {
+    ctx.moveTo(x + x1 * size, y + y1 * size);
+    ctx.lineTo(x + x2 * size, y + y2 * size);
+  }
+  ctx.stroke();
+}
+
+// 中心の輝き
+function drawCoreGlow(cx, cy, inten, color) {
+  ctx.save();
+  ctx.globalCompositeOperation = 'lighter';
+  const r = lerp(30, 120, inten);
+  const g = ctx.createRadialGradient(cx, cy, 0, cx, cy, r);
+  g.addColorStop(0, 'rgba(255,255,240,' + (0.9 * inten) + ')');
+  g.addColorStop(0.4, color + '');
+  g.addColorStop(1, 'rgba(255,180,40,0)');
+  ctx.globalAlpha = 0.8 * inten;
+  ctx.fillStyle = g;
+  ctx.beginPath();
+  ctx.arc(cx, cy, r, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
+  ctx.globalAlpha = 1;
+}
+
+// マダンテ本体
+function drawMadante(t, time) {
+  const cx = effectCenter.x, cy = effectCenter.y;
+
+  // ピンク紫のドーム（全画面グラデーション）
+  const bell = Math.sin(clamp(t / 0.72, 0, 1) * Math.PI); // 山なりの強度
+  if (bell > 0.01) {
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    const maxR = Math.hypot(W, H) * 0.75;
+    const r = maxR * easeOut(clamp(t / 0.5, 0, 1));
+    const g = ctx.createRadialGradient(cx, cy, 0, cx, cy, Math.max(r, 1));
+    g.addColorStop(0, `rgba(255,240,255,${0.75 * bell})`);
+    g.addColorStop(0.3, `rgba(255,110,250,${0.42 * bell})`);
+    g.addColorStop(0.65, `rgba(150,40,220,${0.28 * bell})`);
+    g.addColorStop(1, 'rgba(80,0,140,0)');
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, W, H);
+    ctx.restore();
+  }
+
+  // 衝撃波リング
+  ctx.save();
+  ctx.globalCompositeOperation = 'lighter';
+  for (let i = 0; i < 3; i++) {
+    const rt = clamp((t - i * 0.08) / 0.6, 0, 1);
+    if (rt <= 0 || rt >= 1) continue;
+    const r = easeOut(rt) * Math.hypot(W, H) * 0.6;
+    ctx.globalAlpha = (1 - rt) * 0.7;
+    ctx.strokeStyle = i === 0 ? '#ffffff' : '#ff8bff';
+    ctx.lineWidth = lerp(18, 2, rt);
+    ctx.shadowColor = '#ff5bff';
+    ctx.shadowBlur = 30;
+    ctx.beginPath();
+    ctx.arc(cx, cy, r, 0, Math.PI * 2);
+    ctx.stroke();
+  }
+  ctx.restore();
+  ctx.globalAlpha = 1;
+
+  // 垂直の光柱
+  ctx.save();
+  ctx.globalCompositeOperation = 'lighter';
+  for (const p of pillars) {
+    const pt = (t - p.t0) / p.dur;
+    if (pt <= 0 || pt >= 1) continue;
+    const a = Math.sin(pt * Math.PI) * (0.5 + 0.5 * Math.random());
+    const g = ctx.createLinearGradient(p.x - p.w / 2, 0, p.x + p.w / 2, 0);
+    g.addColorStop(0, 'rgba(255,80,255,0)');
+    g.addColorStop(0.5, `rgba(255,190,255,${0.75 * a})`);
+    g.addColorStop(1, 'rgba(255,80,255,0)');
+    ctx.fillStyle = g;
+    ctx.fillRect(p.x - p.w / 2, 0, p.w, H);
+  }
+  ctx.restore();
+
+  // 白フラッシュ（発動直後）
+  if (t < 0.13) {
+    ctx.fillStyle = `rgba(255,255,255,${1 - t / 0.13})`;
+    ctx.fillRect(0, 0, W, H);
+  }
+  // 画面全体のマゼンタ色調
+  ctx.fillStyle = `rgba(200,40,220,${0.13 * bell})`;
+  ctx.fillRect(0, 0, W, H);
+}
+
+// メラゾーマ: 火球の成長 → 炎の爆発
+function drawMerazoma(t, time) {
+  const cx = effectCenter.x, cy = effectCenter.y;
+  if (t < 0.38) {
+    // 火球が手元で成長・明滅
+    const gt = t / 0.38;
+    const r = lerp(24, 115, easeOut(gt)) + Math.sin(time * 42) * 6;
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    const g = ctx.createRadialGradient(cx, cy, 0, cx, cy, Math.max(r, 1));
+    g.addColorStop(0, 'rgba(255,255,230,0.95)');
+    g.addColorStop(0.35, 'rgba(255,220,80,0.9)');
+    g.addColorStop(0.7, 'rgba(255,120,30,0.8)');
+    g.addColorStop(1, 'rgba(200,30,0,0)');
+    ctx.fillStyle = g;
+    ctx.beginPath();
+    ctx.arc(cx, cy, r, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+  } else {
+    const et = clamp((t - 0.38) / 0.55, 0, 1);
+    const bell = Math.sin(et * Math.PI);
+    // オレンジの爆発ドーム
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    const maxR = Math.hypot(W, H) * 0.6;
+    const r = Math.max(maxR * easeOut(et), 1);
+    const g = ctx.createRadialGradient(cx, cy, 0, cx, cy, r);
+    g.addColorStop(0, `rgba(255,250,220,${0.8 * bell})`);
+    g.addColorStop(0.35, `rgba(255,180,60,${0.5 * bell})`);
+    g.addColorStop(0.7, `rgba(255,80,20,${0.3 * bell})`);
+    g.addColorStop(1, 'rgba(160,20,0,0)');
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, W, H);
+    // 衝撃波リング
+    if (et < 1) {
+      ctx.globalAlpha = (1 - et) * 0.7;
+      ctx.strokeStyle = '#ffcc66';
+      ctx.lineWidth = lerp(14, 2, et);
+      ctx.shadowColor = '#ff8822';
+      ctx.shadowBlur = 25;
+      ctx.beginPath();
+      ctx.arc(cx, cy, easeOut(et) * maxR * 0.8, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+    ctx.restore();
+    ctx.globalAlpha = 1;
+    // バースト直後のフラッシュ
+    if (t < 0.46) {
+      ctx.fillStyle = `rgba(255,230,170,${(1 - (t - 0.38) / 0.08) * 0.9})`;
+      ctx.fillRect(0, 0, W, H);
+    }
+    // オレンジの色調
+    ctx.fillStyle = `rgba(255,120,20,${0.1 * bell})`;
+    ctx.fillRect(0, 0, W, H);
+  }
+}
+
+// ホイミ: 降り注ぐ光と緑金のきらめき
+function drawHoimi(t, time) {
+  const bell = Math.sin(clamp(t / 0.9, 0, 1) * Math.PI);
+  ctx.save();
+  ctx.globalCompositeOperation = 'lighter';
+  // 天から降りる光の柱
+  const colW = 360;
+  const g = ctx.createLinearGradient(effectCenter.x - colW / 2, 0, effectCenter.x + colW / 2, 0);
+  g.addColorStop(0, 'rgba(180,255,160,0)');
+  g.addColorStop(0.5, `rgba(225,255,195,${0.3 * bell})`);
+  g.addColorStop(1, 'rgba(180,255,160,0)');
+  ctx.fillStyle = g;
+  ctx.fillRect(effectCenter.x - colW / 2, 0, colW, H);
+  // 体の周りのやわらかい光
+  const gy = H * 0.55;
+  const r2 = 240;
+  const g2 = ctx.createRadialGradient(effectCenter.x, gy, 0, effectCenter.x, gy, r2);
+  g2.addColorStop(0, `rgba(235,255,205,${0.5 * bell})`);
+  g2.addColorStop(1, 'rgba(180,255,160,0)');
+  ctx.fillStyle = g2;
+  ctx.beginPath();
+  ctx.arc(effectCenter.x, gy, r2, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
+}
+
+// ラリホーマ: ピンク紫の眠りの霧とＺ
+function drawRarihoma(t, time) {
+  const bell = Math.sin(clamp(t / 0.95, 0, 1) * Math.PI);
+  // 漂う霧
+  ctx.save();
+  for (const m of mist) {
+    const mx = m.x + Math.sin(time * 0.5 + m.phase) * 60 + m.drift * t * 4;
+    const a = Math.max(0, 0.32 * bell * (0.6 + 0.4 * Math.sin(time * 1.3 + m.phase)));
+    const g = ctx.createRadialGradient(mx, m.y, 0, mx, m.y, m.r);
+    g.addColorStop(0, `rgba(${m.hue},${a})`);
+    g.addColorStop(1, `rgba(${m.hue},0)`);
+    ctx.fillStyle = g;
+    ctx.fillRect(mx - m.r, m.y - m.r, m.r * 2, m.r * 2);
+  }
+  ctx.restore();
+  // 中心の周りを回るきらめき
+  ctx.save();
+  ctx.globalCompositeOperation = 'lighter';
+  for (let i = 0; i < 6; i++) {
+    const a2 = time * 1.6 + i * Math.PI / 3;
+    const rr = 130 + 40 * Math.sin(time * 2 + i);
+    const sx = effectCenter.x + Math.cos(a2) * rr;
+    const sy = effectCenter.y + Math.sin(a2) * rr * 0.5;
+    ctx.globalAlpha = 0.7 * bell;
+    ctx.fillStyle = '#e0b0ff';
+    ctx.shadowColor = '#c880ff';
+    ctx.shadowBlur = 14;
+    ctx.beginPath();
+    ctx.arc(sx, sy, 4, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.restore();
+  ctx.globalAlpha = 1;
+  // うっすら紫の全画面
+  ctx.fillStyle = `rgba(150,60,200,${0.1 * bell})`;
+  ctx.fillRect(0, 0, W, H);
+}
+
+// ダメージ数字（黄色いトゲトゲ吹き出し）
+function drawDamageNumber(d) {
+  const t = d.life / d.maxLife;
+  let scale;
+  if (t < 0.12) scale = (t / 0.12) * 1.3;
+  else if (t < 0.24) scale = 1.3 - ((t - 0.12) / 0.12) * 0.3;
+  else scale = 1;
+  const alpha = t > 0.75 ? 1 - (t - 0.75) / 0.25 : 1;
+  const rise = t > 0.6 ? (t - 0.6) * 80 : 0;
+
+  // 回復数字（緑・バーストなしでふわっと浮かぶ）
+  if (d.heal) {
+    ctx.save();
+    ctx.translate(d.x, d.y - rise - t * 30);
+    ctx.scale(scale, scale);
+    ctx.globalAlpha = alpha;
+    ctx.font = 'bold 58px Meiryo, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.lineWidth = 9;
+    ctx.strokeStyle = '#0a3d00';
+    ctx.shadowColor = 'rgba(130,255,130,0.9)';
+    ctx.shadowBlur = 18;
+    ctx.strokeText(d.text, 0, 0);
+    ctx.shadowBlur = 0;
+    ctx.fillStyle = '#9dff70';
+    ctx.fillText(d.text, 0, 0);
+    ctx.restore();
+    ctx.globalAlpha = 1;
+    return;
+  }
+
+  ctx.save();
+  ctx.translate(d.x, d.y - rise);
+  ctx.rotate(d.rot);
+  ctx.scale(scale, scale);
+  ctx.globalAlpha = alpha;
+
+  // トゲトゲの星形バースト
+  const spikes = 14, outer = 78, inner = 56;
+  ctx.beginPath();
+  for (let i = 0; i < spikes * 2; i++) {
+    const r = i % 2 === 0 ? outer : inner;
+    const a = (i / (spikes * 2)) * Math.PI * 2 - Math.PI / 2;
+    const px = Math.cos(a) * r * 1.25; // 横長に
+    const py = Math.sin(a) * r * 0.85;
+    if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+  }
+  ctx.closePath();
+  const g = ctx.createRadialGradient(0, 0, 10, 0, 0, outer);
+  g.addColorStop(0, '#fff3a0');
+  g.addColorStop(0.7, '#ffd91e');
+  g.addColorStop(1, '#ffab00');
+  ctx.fillStyle = g;
+  ctx.strokeStyle = '#c74a00';
+  ctx.lineWidth = 4;
+  ctx.shadowColor = 'rgba(255,170,0,0.8)';
+  ctx.shadowBlur = 16;
+  ctx.fill();
+  ctx.shadowBlur = 0;
+  ctx.stroke();
+
+  // 数字
+  ctx.font = `bold ${d.text.length > 4 ? 42 : 50}px Meiryo, sans-serif`;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.lineWidth = 8;
+  ctx.strokeStyle = '#5c1a00';
+  ctx.strokeText(d.text, 0, 2);
+  ctx.fillStyle = '#ffffff';
+  ctx.fillText(d.text, 0, 2);
+
+  ctx.restore();
+  ctx.globalAlpha = 1;
+}
+
+// DQ風メッセージウィンドウ
+function drawMessageWindow(lines) {
+  const pad = 18;
+  const lineH = 34;
+  const fontPx = 24;
+  ctx.font = `bold ${fontPx}px Meiryo, 'Hiragino Kaku Gothic ProN', sans-serif`;
+  let maxW = 0;
+  for (const l of lines) maxW = Math.max(maxW, ctx.measureText(l).width);
+  const bw = clamp(maxW + pad * 2 + 20, 320, W * 0.9);
+  const bh = lines.length * lineH + pad * 2 - 6;
+  const bx = (W - bw) / 2;
+  const by = H - bh - 28;
+
+  // 黒地
+  ctx.fillStyle = 'rgba(0,0,10,0.78)';
+  roundedRect(bx, by, bw, bh, 8);
+  ctx.fill();
+  // 白い二重枠
+  ctx.strokeStyle = '#ffffff';
+  ctx.lineWidth = 3;
+  roundedRect(bx + 3, by + 3, bw - 6, bh - 6, 6);
+  ctx.stroke();
+  ctx.lineWidth = 1;
+  roundedRect(bx + 8, by + 8, bw - 16, bh - 16, 4);
+  ctx.stroke();
+
+  ctx.fillStyle = '#ffffff';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  for (let i = 0; i < lines.length; i++) {
+    ctx.fillText(lines[i], W / 2, by + pad + lineH * i + lineH / 2 - 4);
+  }
+}
+function roundedRect(x, y, w, h, r) {
+  ctx.beginPath();
+  if (ctx.roundRect) ctx.roundRect(x, y, w, h, r);
+  else ctx.rect(x, y, w, h);
+}
+
+// ---------- メインループ ----------
+function loop(now) {
+  const dt = clamp((now - lastTime) / 1000, 0.001, 0.05);
+  lastTime = now;
+  update(dt, now);
+  draw(now);
+
+  // ステータス表示
+  const handTxt = handsAvailable
+    ? `手の検出: ${lastPalms.length}` : '手の認識: 無効（Space/ボタンで発動）';
+  const spellLabel = (SPELLS[spellSel.value] || SPELLS.madante).label;
+  const stTxt = state === 'release'
+    ? `${activeSpell.label}!!`
+    : { idle: '待機中', charging: '詠唱中...', ready: 'チャージ完了！' }[state];
+  statusEl.textContent = `${handTxt} ｜ ${spellLabel} ｜ ${stTxt}` + (recorder && recorder.state === 'recording' ? ' ｜ ⏺録画中' : '');
+
+  requestAnimationFrame(loop);
+}
+
+// ---------- 録画 ----------
+let recorder = null;
+let recChunks = [];
+let lastRecording = null;
+const saveBtn = document.getElementById('saveBtn');
+
+function downloadRecording() {
+  if (!lastRecording) return;
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(lastRecording.blob);
+  a.download = lastRecording.fname;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+}
+
+saveBtn.onclick = async () => {
+  saveBtn.blur();
+  if (!lastRecording) return;
+  const file = new File([lastRecording.blob], lastRecording.fname, { type: lastRecording.blob.type });
+  try {
+    if (navigator.canShare && navigator.canShare({ files: [file] })) {
+      // iPhone/Androidの共有シート。「ビデオを保存」でカメラロールに入る
+      await navigator.share({ files: [file] });
+      saveBtn.style.display = 'none';
+      return;
+    }
+  } catch (e) {
+    if (e.name === 'AbortError') return;  // キャンセル: ボタンは残す
+  }
+  downloadRecording();
+  saveBtn.style.display = 'none';
+};
+
+function pickMime() {
+  const cands = ['video/mp4;codecs=avc1', 'video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm'];
+  for (const m of cands) if (MediaRecorder.isTypeSupported(m)) return m;
+  return '';
+}
+recBtn.onclick = () => {
+  recBtn.blur();
+  if (recorder && recorder.state === 'recording') {
+    recorder.stop();
+    return;
+  }
+  const canvasStream = canvas.captureStream(30);
+  const tracks = [...canvasStream.getVideoTracks()];
+  if (audioDest) tracks.push(...audioDest.stream.getAudioTracks());
+  const stream = new MediaStream(tracks);
+  const mime = pickMime();
+  recChunks = [];
+  recorder = new MediaRecorder(stream, mime ? { mimeType: mime, videoBitsPerSecond: 8_000_000 } : undefined);
+  recorder.ondataavailable = e => { if (e.data.size) recChunks.push(e.data); };
+  recorder.onstop = () => {
+    const ext = (recorder.mimeType || '').includes('mp4') ? 'mp4' : 'webm';
+    const blob = new Blob(recChunks, { type: recorder.mimeType || 'video/mp4' });
+    const d = new Date();
+    const pad2 = n => String(n).padStart(2, '0');
+    const fname = `dq_magic_${d.getFullYear()}${pad2(d.getMonth() + 1)}${pad2(d.getDate())}_${pad2(d.getHours())}${pad2(d.getMinutes())}${pad2(d.getSeconds())}.${ext}`;
+    lastRecording = { blob, fname };
+    const file = new File([blob], fname, { type: blob.type });
+    if (navigator.canShare && navigator.canShare({ files: [file] })) {
+      // スマホ: 共有はユーザー操作起点でないと動かないので、保存ボタンを出してタップしてもらう
+      saveBtn.style.display = '';
+      showMessage(['ろくが かんりょう！', '「💾 動画を保存」を おしてください'], 4);
+    } else {
+      downloadRecording();
+    }
+    recBtn.textContent = '⏺ 録画開始';
+    recBtn.classList.remove('recording');
+  };
+  recorder.start();
+  recBtn.textContent = '⏹ 録画停止';
+  recBtn.classList.add('recording');
+};
+
+// ---------- 起動 ----------
+document.getElementById('startBtn').onclick = async () => {
+  const btn = document.getElementById('startBtn');
+  btn.disabled = true;
+  try {
+    loadMsg.textContent = 'カメラ起動中...';
+    initAudio();
+    await startCamera();
+    loadMsg.textContent = '手認識モデル読込中...（初回は10秒ほど）';
+    await loadHandModel();
+    document.getElementById('startOverlay').style.display = 'none';
+    recBtn.disabled = false;
+    castBtn.disabled = false;
+    flipBtn.disabled = false;
+    keepAwake();
+    if (!handsAvailable) {
+      showMessage(['手の認識が使えません（通信を確認）', 'Spaceキー か ✨ボタンで 発動できます'], 5);
+    }
+    lastTime = performance.now();
+    requestAnimationFrame(loop);
+  } catch (e) {
+    console.error(e);
+    btn.disabled = false;
+    loadMsg.textContent = 'エラー: ' + e.message + '（カメラの許可を確認してください）';
+  }
+};
+</script>
+</body>
+</html>
